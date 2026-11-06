@@ -18,11 +18,16 @@ window.gbqsAuthParams = function () {
 
 window.gbqsFn = async function (name, body) {
   const c = window.GBQS_TEST;
-  const r = await fetch(`${c.supabaseUrl}/functions/v1/${name}`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json', apikey: c.publishableKey },
-    body: JSON.stringify(body)
-  });
+  let r;
+  try {
+    r = await fetch(`${c.supabaseUrl}/functions/v1/${name}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', apikey: c.publishableKey },
+      body: JSON.stringify(body)
+    });
+  } catch {
+    return { status: 0, data: { ok: false, message: 'Could not reach the demo. Check your connection and try again.' } };
+  }
   let data = null;
   try { data = await r.json(); } catch { data = null; }
   return { status: r.status, data };
