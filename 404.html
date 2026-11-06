@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>GlobalBQS test environment</title>
+<link rel="stylesheet" href="/style.css?v=1.0.0">
+<script src="/config.js?v=1.0.0"></script>
+<script>
+  // Auth links from the demo land here: hand invite/recovery tokens to the set-password page
+  (function () {
+    var h = location.hash || '';
+    if (/access_token=/.test(h) || /error=/.test(h + location.search)) {
+      location.replace('/set-password' + location.search + h);
+    }
+  })();
+</script>
+</head>
+<body>
+<div class="banner">TEST ENVIRONMENT (DEMO) · NOT FOR CLIENTS</div>
+<header><div class="wrap"><span class="brand">GlobalBQS</span><span class="sub">Test environment</span></div></header>
+<main><div class="wrap">
+  <div class="card">
+    <h1>Test environment</h1>
+    <p>This address is the single landing page for every link the demo environment sends (invitations, password resets, sign-up confirmations). It only talks to demo data.</p>
+    <ul class="muted">
+      <li>Test accounts use <code>test+name@globalbqs.com</code> – all mail arrives in one test mailbox.</li>
+      <li>Portal screens are tested in the portal preview, which runs on the demo.</li>
+    </ul>
+  </div>
+
+  <div class="card" id="signin">
+    <h2>Sign-in check</h2>
+    <p class="muted">Signs in on the demo, runs the same first-login step as the portal and shows what the account sees. Signs out again afterwards.</p>
+    <form id="f" autocomplete="off">
+      <label for="e">E-mail</label>
+      <input id="e" type="email" required>
+      <label for="p">Password</label>
+      <input id="p" type="password" autocomplete="current-password" required>
+      <button id="b" type="submit">Check account</button>
+    </form>
+    <div id="m" class="msg"></div>
+    <pre id="out" style="display:none"></pre>
+  </div>
+</div></main>
+<footer>GlobalBQS · test environment · demo data only · v1.0.0</footer>
+<script>
+(() => {
+  const c = GBQS_TEST;
+  const f = document.getElementById('f'), m = document.getElementById('m'), out = document.getElementById('out'), b = document.getElementById('b');
+  const show = (cls, t) => { m.className = 'msg ' + cls; m.textContent = t; };
+  const rpc = async (tok, name) => {
+    const r = await fetch(`${c.supabaseUrl}/rest/v1/rpc/${name}`, {
+      method: 'POST',
+      headers: { apikey: c.publishableKey, authorization: 'Bearer ' + tok, 'content-type': 'application/json' },
+      body: '{}'
+    });
+    let d = null; try { d = await r.json(); } catch {}
+    return { status: r.status, data: d };
+  };
+  f.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    b.disabled = true; out.style.display = 'none'; show('info', 'Signing in…');
+    try {
+      const r = await fetch(`${c.supabaseUrl}/auth/v1/token?grant_type=password`, {
+        method: 'POST',
+        headers: { apikey: c.publishableKey, 'content-type': 'application/json' },
+        body: JSON.stringify({ email: document.getElementById('e').value.trim().toLowerCase(), password: document.getElementById('p').value })
+      });
+      const s = await r.json();
+      if (!r.ok || !s.access_token) { show('err', s.error_description || s.msg || 'Sign-in failed.'); return; }
+      const tok = s.access_token;
+      const done = await rpc(tok, 'sa_complete_signup');
+      const me = await rpc(tok, 'sa_portal_me');
+      out.textContent = JSON.stringify({ user: s.user && s.user.email, first_login_step: done, me: me }, null, 2);
+      out.style.display = 'block';
+      if (s.user && s.user.factors && s.user.factors.length) show('info', 'Signed in (account has two-factor authentication; the portal will ask for a code).');
+      else show('ok', 'Signed in on the demo.');
+      fetch(`${c.supabaseUrl}/auth/v1/logout`, { method: 'POST', headers: { apikey: c.publishableKey, authorization: 'Bearer ' + tok } }).catch(() => {});
+    } catch (err) {
+      show('err', 'Could not reach the demo.');
+    } finally {
+      b.disabled = false; document.getElementById('p').value = '';
+    }
+  });
+})();
+</script>
+</body>
+</html>
