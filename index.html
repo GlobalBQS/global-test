@@ -77,7 +77,7 @@
       out.style.display = 'block';
       if (s.user && s.user.factors && s.user.factors.length) show('info', 'Signed in (account has two-factor authentication; the portal will ask for a code).');
       else show('ok', 'Signed in on the demo.');
-      fetch(`${c.supabaseUrl}/auth/v1/logout`, { method: 'POST', headers: { apikey: c.publishableKey, authorization: 'Bearer ' + tok } }).catch(() => {});
+      fetch(`${c.supabaseUrl}/auth/v1/logout?scope=local`, { method: 'POST', headers: { apikey: c.publishableKey, authorization: 'Bearer ' + tok } }).catch(() => {});
     } catch (err) {
       show('err', 'Could not reach the demo.');
     } finally {
