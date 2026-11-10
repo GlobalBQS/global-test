@@ -1,0 +1,387 @@
+import { useEffect, useState } from 'react'
+import { Info, Search, Check, X } from 'lucide-react'
+import { FilterClear } from '../../components/FilterBar'
+import { CARD, CARD_HEADER, CARD_TITLE, CARD_SUBTITLE, COUNT_CHIP, FILTER_ROW, FILTER_SELECT, SEARCH_INPUT, TH, ROW, TD } from '../dashboard/cardStyles'
+import { formatCount } from '../../utils/format'
+import { useSurveyorAccessApi } from '../../hooks/backend/surveyors'
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '../../lib/shadcn/dialog'
+import { Button } from '../../lib/shadcn/button'
+import { Label } from '../../lib/shadcn/label'
+import { Textarea } from '../../lib/shadcn/textarea'
+import { toast } from '../../lib/shadcn/sonner'
+
+// GCS & signalen – GlobalBQS v1.0.47 (10-11-2026): voorstellen van de maandelijkse GCS-evaluatie bevestigen of
+// afwijzen (geen volledig automatisch besluit, art. 22 AVG), overzicht certificeringen met handmatig intrekken,
+// ratingsignalen (eigen jobs) en dubbele routes (eigen job = GBQS-order).
+// Backend: backend/surveyors/surveyorAccessApi.ts (acties gcs, gcsDecide, gcsRevoke, signals, overlaps).
+
+type GcsStatus = 'candidate' | 'certified' | 'conditional' | 'revoked'
+type Cert = {
+  surveyor_id: string; name: string; company_name: string | null; status: GcsStatus; cert_number: string | null
+  certified_since: string | null; valid_until: string | null; conditional_deadline: string | null; revoked_at: string | null
+  reason: string | null; surveys: number; vessels: number; score: number | null; eligible: boolean; missing: string[] | null
+  last_evaluated_at: string | null; proposal_id: string | null; proposal_to: string | null
+}
+type Proposal = {
+  id: string; surveyor_id: string; name: string; email: string | null; company_name: string | null
+  from_status: GcsStatus; to_status: 'conditional' | 'revoked'; reason: string | null; score: number | null
+  surveys: number | null; vessels: number | null; status: 'open' | 'approved' | 'rejected' | 'superseded'
+  created_at: string; decided_at: string | null; decided_by: string | null; decision_note: string | null
+  cert_number: string | null; conditional_deadline: string | null
+}
+type Signal = {
+  surveyor_id: string; name: string; company_name: string | null; self_reported_surveys: number; vessels: number
+  top_vessel_n: number; top_vessel_pct: number | null; no_photos: number; no_photos_pct: number | null
+  zero_diff: number; zero_diff_pct: number | null; no_signatures: number; last_survey: string | null; signals: string[] | null
+}
+type Overlap = {
+  job_id: string; reference: string; company_name: string | null; vessel_name: string | null; imo_number: string | null
+  port: string | null; eta: string | null; survey_type: string; job_status: string; gbqs_reference: string | null; gbqs_surveyor: string | null
+}
+
+const STATUS_LABELS: Record<GcsStatus, string> = { candidate: 'Kandidaat', certified: 'Certified', conditional: 'Conditional', revoked: 'Ingetrokken' }
+const PILL = 'inline-flex items-center rounded-[6px] border px-1.5 py-0.5 text-[11px] font-medium whitespace-nowrap'
+const STATUS_CLASS: Record<GcsStatus, string> = {
+  candidate: 'border-border text-muted-foreground bg-muted',
+  certified: 'border-success/40 text-success bg-success/10',
+  conditional: 'border-warning/40 text-warning bg-warning/10',
+  revoked: 'border-destructive/40 text-destructive bg-destructive/10',
+}
+const PROP_LABELS: Record<Proposal['status'], string> = { open: 'Open', approved: 'Bevestigd', rejected: 'Afgewezen', superseded: 'Vervallen' }
+const MISSING: Record<string, string> = {
+  surveys: 'te weinig surveys', vessels: 'te weinig schepen', score: 'rating te laag', deployment: 'niet actief', company_check: 'bedrijf niet gecontroleerd',
+}
+const SIGNAL_LABELS: Record<string, string> = {
+  same_vessel: 'Steeds hetzelfde schip', no_photos: 'Geen foto’s', zero_diff: 'Altijd 0,00% verschil', no_signatures: 'Geen handtekeningen',
+}
+const INPUT_CLS = 'bg-muted border-border text-foreground placeholder:text-muted-foreground focus:border-primary'
+const BTN = 'inline-flex items-center gap-1 h-[30px] px-2.5 text-xs rounded-[8px] border border-border text-muted-foreground hover:text-foreground hover:bg-muted transition-colors'
+const BTN_PRIMARY = 'inline-flex items-center gap-1 h-[30px] px-2.5 text-xs rounded-[8px] bg-primary text-primary-foreground hover:bg-primary/90 transition-colors'
+const BTN_DANGER = 'inline-flex items-center gap-1 h-[30px] px-2.5 text-xs rounded-[8px] border border-border text-muted-foreground hover:text-destructive hover:border-destructive/40 transition-colors'
+
+function fmtDate(value: string | null): string {
+  if (!value) return '—'
+  const d = new Date(value)
+  if (isNaN(d.getTime())) return '—'
+  return d.toLocaleDateString('nl-NL', { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC' })
+}
+const pct = (v: number | null) => (v == null ? '—' : `${Math.round(Number(v))}%`)
+
+type Decide = { p: Proposal; approve: boolean } | null
+
+export function SurveyorGcsTab({ onCountChange }: { onCountChange?: (open: number) => void }) {
+  const { data, loading, trigger } = useSurveyorAccessApi()
+  const { data: sigData, loading: sigLoading, trigger: triggerSig } = useSurveyorAccessApi()
+  const { data: ovData, loading: ovLoading, trigger: triggerOv } = useSurveyorAccessApi()
+  const { loading: saving, trigger: triggerSave } = useSurveyorAccessApi()
+  const [status, setStatus] = useState('')
+  const [search, setSearch] = useState('')
+  const [decide, setDecide] = useState<Decide>(null)
+  const [revoke, setRevoke] = useState<Cert | null>(null)
+  const [note, setNote] = useState('')
+  const [formError, setFormError] = useState('')
+  const [showHistory, setShowHistory] = useState(false)
+
+  const load = () => trigger({ action: 'gcs' })
+  useEffect(() => { load(); triggerSig({ action: 'signals' }); triggerOv({ action: 'overlaps' }) }, [])
+
+  const res = data as { certifications?: Cert[]; proposals?: Proposal[]; canManage?: boolean } | undefined
+  const certs = res?.certifications ?? []
+  const proposals = res?.proposals ?? []
+  const canManage = res?.canManage === true
+  const open = proposals.filter(p => p.status === 'open')
+  const history = proposals.filter(p => p.status !== 'open')
+  useEffect(() => { onCountChange?.(open.length) }, [open.length])
+  const signals = ((sigData as { rows?: Signal[] } | undefined)?.rows ?? []).filter(s => (s.signals ?? []).length > 0)
+  const overlaps = (ovData as { rows?: Overlap[] } | undefined)?.rows ?? []
+
+  const q = search.toLowerCase().trim()
+  const filtered = certs
+    .filter(c => !status || c.status === status)
+    .filter(c => !q || `${c.name} ${c.company_name ?? ''} ${c.cert_number ?? ''}`.toLowerCase().includes(q))
+    .sort((a, b) => (a.status === 'candidate' ? 1 : 0) - (b.status === 'candidate' ? 1 : 0) || (Number(b.score ?? 0) - Number(a.score ?? 0)))
+
+  function openDecide(p: Proposal, approve: boolean) { setDecide({ p, approve }); setNote(''); setFormError('') }
+  async function saveDecide() {
+    if (!decide) return
+    if (!decide.approve && !note.trim()) { setFormError('Geef een reden op (intern).'); return }
+    const r = (await triggerSave({ action: 'gcsDecide', id: decide.p.id, approve: decide.approve, note })) as { ok?: boolean; message?: string } | null
+    if (r?.ok) { toast.success(r.message ?? 'Opgeslagen.'); setDecide(null); load() } else setFormError(r?.message ?? 'Opslaan mislukt.')
+  }
+  function openRevoke(c: Cert) { setRevoke(c); setNote(''); setFormError('') }
+  async function saveRevoke() {
+    if (!revoke) return
+    if (!note.trim()) { setFormError('Een reden is verplicht (komt in de mail, Engels).'); return }
+    const r = (await triggerSave({ action: 'gcsRevoke', id: revoke.surveyor_id, note })) as { ok?: boolean; message?: string } | null
+    if (r?.ok) { toast.success('Certificering ingetrokken; de surveyor is gemaild.'); setRevoke(null); load() } else setFormError(r?.message ?? 'Intrekken mislukt.')
+  }
+
+  return (
+    <div className="space-y-5">
+      <div className="flex items-start gap-2.5 rounded-lg border border-border bg-muted/50 px-4 py-3 text-muted-foreground">
+        <Info className="w-4 h-4 shrink-0 mt-0.5" />
+        <span className="text-[13px]">
+          De GCS-evaluatie draait op de 1e van de maand. Toekennen, herstel en verlengen gaan automatisch. <b>Conditional</b> en <b>intrekken</b> zijn
+          altijd eerst een <b>voorstel</b>: pas na <b>Bevestigen</b> wijzigt de status en krijgt de surveyor een mail. Bij <b>Afwijzen</b> blijft alles zoals
+          het is (reden intern); volgende maand wordt opnieuw beoordeeld. Schorsen of blokkeren van een surveyor of bedrijf trekt de certificering direct in.
+        </span>
+      </div>
+
+      {/* VOORSTELLEN */}
+      <div className={CARD}>
+        <div className={CARD_HEADER}>
+          <div>
+            <h3 className={CARD_TITLE}>Voorstellen GCS</h3>
+            <p className={CARD_SUBTITLE}>{open.length > 0 ? `${formatCount(open.length)} te beoordelen` : 'Niets te beoordelen'} · nog niets gewijzigd of gemaild</p>
+          </div>
+          <div className="flex items-center gap-2">
+            {history.length > 0 && <button className={BTN} onClick={() => setShowHistory(v => !v)}>{showHistory ? 'Verberg afgehandeld' : `Afgehandeld (${history.length})`}</button>}
+            <span className={COUNT_CHIP}>{loading ? '…' : formatCount(open.length)}</span>
+          </div>
+        </div>
+        {loading && proposals.length === 0 ? (
+          <div className="p-5 space-y-2">{[1, 2].map(i => <div key={i} className="h-10 rounded bg-muted animate-pulse" />)}</div>
+        ) : (open.length === 0 && !showHistory) ? (
+          <div className="py-8 text-center text-muted-foreground text-sm">Geen open voorstellen.</div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full border-collapse">
+              <thead>
+                <tr>
+                  <th className={TH}>SURVEYOR</th><th className={TH}>VOORSTEL</th><th className={TH}>REDEN</th>
+                  <th className={`${TH} text-right`}>RATING</th><th className={`${TH} text-right`}>SURVEYS / SCHEPEN</th>
+                  <th className={TH}>DATUM</th><th className={`${TH} text-right`}>{showHistory ? 'UITKOMST' : ''}</th>
+                </tr>
+              </thead>
+              <tbody>
+                {[...open, ...(showHistory ? history : [])].map(p => (
+                  <tr key={p.id} className={ROW}>
+                    <td className={TD}>
+                      <div className="font-semibold text-foreground">{p.name}</div>
+                      <div className="text-xs text-muted-foreground">{[p.company_name, p.cert_number].filter(Boolean).join(' · ') || '—'}</div>
+                    </td>
+                    <td className={TD}>
+                      <span className={`${PILL} ${STATUS_CLASS[p.from_status] ?? ''}`}>{STATUS_LABELS[p.from_status] ?? p.from_status}</span>
+                      <span className="mx-1 text-muted-foreground">→</span>
+                      <span className={`${PILL} ${STATUS_CLASS[p.to_status]}`}>{STATUS_LABELS[p.to_status]}</span>
+                    </td>
+                    <td className={`${TD} text-muted-foreground max-w-[280px]`}>{p.reason ?? '—'}</td>
+                    <td className={`${TD} text-right font-mono`}>{p.score != null ? Number(p.score).toFixed(1) : '—'}</td>
+                    <td className={`${TD} text-right font-mono`}>{p.surveys ?? '—'} / {p.vessels ?? '—'}</td>
+                    <td className={`${TD} text-muted-foreground whitespace-nowrap`}>{fmtDate(p.created_at)}</td>
+                    <td className={`${TD} text-right whitespace-nowrap`}>
+                      {p.status === 'open' ? (canManage ? (
+                        <span className="inline-flex gap-1.5">
+                          <button className={BTN_PRIMARY} onClick={() => openDecide(p, true)}><Check className="w-3.5 h-3.5" /> Bevestigen</button>
+                          <button className={BTN} onClick={() => openDecide(p, false)}><X className="w-3.5 h-3.5" /> Afwijzen</button>
+                        </span>
+                      ) : <span className="text-xs text-muted-foreground">Geen recht</span>) : (
+                        <span className="text-xs text-muted-foreground" title={p.decision_note ?? undefined}>
+                          {PROP_LABELS[p.status]} {fmtDate(p.decided_at)}{p.decided_by ? ` · ${p.decided_by}` : ''}
+                        </span>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      {/* CERTIFICERINGEN */}
+      <div className={CARD}>
+        <div className={CARD_HEADER}>
+          <div>
+            <h3 className={CARD_TITLE}>Certificeringen (GCS)</h3>
+            <p className={CARD_SUBTITLE}>Voortgang per surveyor (laatste 12 maanden) · criteria in instelling gcs_criteria</p>
+          </div>
+          <span className={COUNT_CHIP}>{loading ? '…' : `${formatCount(filtered.length)} surveyor${filtered.length !== 1 ? 's' : ''}`}</span>
+        </div>
+        <div className={FILTER_ROW}>
+          <div className="relative flex-1">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground pointer-events-none" />
+            <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Zoek op naam, bedrijf of certificaatnummer…" className={SEARCH_INPUT} />
+          </div>
+          <select value={status} onChange={e => setStatus(e.target.value)} aria-label="Status" className={FILTER_SELECT}>
+            <option value="">Alle statussen</option>
+            {(Object.keys(STATUS_LABELS) as GcsStatus[]).map(s => <option key={s} value={s}>{STATUS_LABELS[s]}</option>)}
+          </select>
+          <FilterClear show={!!(status || search)} onClear={() => { setStatus(''); setSearch('') }} />
+        </div>
+        {loading && certs.length === 0 ? (
+          <div className="p-5 space-y-2">{[1, 2, 3].map(i => <div key={i} className="h-10 rounded bg-muted animate-pulse" />)}</div>
+        ) : filtered.length === 0 ? (
+          <div className="py-12 text-center text-muted-foreground text-sm">Geen surveyors gevonden.</div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full border-collapse">
+              <thead>
+                <tr>
+                  <th className={TH}>SURVEYOR</th><th className={TH}>STATUS</th><th className={`${TH} text-right`}>RATING</th>
+                  <th className={`${TH} text-right`}>SURVEYS</th><th className={`${TH} text-right`}>SCHEPEN</th>
+                  <th className={TH}>ONTBREEKT</th><th className={TH}>GELDIG TOT / DEADLINE</th><th className={`${TH} text-right`} />
+                </tr>
+              </thead>
+              <tbody>
+                {filtered.map(c => (
+                  <tr key={c.surveyor_id} className={ROW}>
+                    <td className={TD}>
+                      <div className="font-semibold text-foreground">{c.name}</div>
+                      <div className="text-xs text-muted-foreground">{[c.company_name, c.cert_number].filter(Boolean).join(' · ') || '—'}</div>
+                    </td>
+                    <td className={TD}>
+                      <span className={`${PILL} ${STATUS_CLASS[c.status]}`}>{STATUS_LABELS[c.status]}</span>
+                      {c.proposal_to && <div className="mt-1"><span className={`${PILL} border-warning/40 text-warning bg-warning/10`}>Voorstel: {STATUS_LABELS[c.proposal_to as GcsStatus] ?? c.proposal_to}</span></div>}
+                    </td>
+                    <td className={`${TD} text-right font-mono`}>{c.score != null ? Number(c.score).toFixed(1) : '—'}</td>
+                    <td className={`${TD} text-right font-mono`}>{formatCount(c.surveys)}</td>
+                    <td className={`${TD} text-right font-mono`}>{formatCount(c.vessels)}</td>
+                    <td className={`${TD} text-muted-foreground`}>
+                      {c.eligible ? <span className="text-success">voldoet</span> : ((c.missing ?? []).map(m => MISSING[m] ?? m).join(', ') || '—')}
+                    </td>
+                    <td className={`${TD} text-muted-foreground whitespace-nowrap`}>
+                      {c.status === 'conditional' ? `herstel vóór ${fmtDate(c.conditional_deadline)}` : c.status === 'certified' ? fmtDate(c.valid_until) : c.status === 'revoked' ? `ingetrokken ${fmtDate(c.revoked_at)}` : '—'}
+                    </td>
+                    <td className={`${TD} text-right`}>
+                      {canManage && (c.status === 'certified' || c.status === 'conditional') && <button className={BTN_DANGER} onClick={() => openRevoke(c)}>Intrekken</button>}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      {/* SIGNALEN */}
+      <div className={CARD}>
+        <div className={CARD_HEADER}>
+          <div>
+            <h3 className={CARD_TITLE}>Signalen rating (eigen jobs)</h3>
+            <p className={CARD_SUBTITLE}>Afwijkende patronen in self-reported surveys · alleen ter controle, er gebeurt niets automatisch</p>
+          </div>
+          <span className={COUNT_CHIP}>{sigLoading ? '…' : formatCount(signals.length)}</span>
+        </div>
+        {sigLoading && signals.length === 0 ? (
+          <div className="p-5 space-y-2">{[1, 2].map(i => <div key={i} className="h-10 rounded bg-muted animate-pulse" />)}</div>
+        ) : signals.length === 0 ? (
+          <div className="py-8 text-center text-muted-foreground text-sm">Geen signalen.</div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full border-collapse">
+              <thead>
+                <tr>
+                  <th className={TH}>SURVEYOR</th><th className={TH}>SIGNALEN</th><th className={`${TH} text-right`}>EIGEN SURVEYS</th>
+                  <th className={`${TH} text-right`}>ZELFDE SCHIP</th><th className={`${TH} text-right`}>ZONDER FOTO’S</th>
+                  <th className={`${TH} text-right`}>0,00% VERSCHIL</th><th className={TH}>LAATSTE</th>
+                </tr>
+              </thead>
+              <tbody>
+                {signals.map(s => (
+                  <tr key={s.surveyor_id} className={ROW}>
+                    <td className={TD}><div className="font-semibold text-foreground">{s.name}</div><div className="text-xs text-muted-foreground">{s.company_name ?? '—'}</div></td>
+                    <td className={TD}><div className="flex flex-wrap gap-1">{(s.signals ?? []).map(x => <span key={x} className={`${PILL} border-warning/40 text-warning bg-warning/10`}>{SIGNAL_LABELS[x] ?? x}</span>)}</div></td>
+                    <td className={`${TD} text-right font-mono`}>{formatCount(s.self_reported_surveys)}</td>
+                    <td className={`${TD} text-right font-mono`}>{s.top_vessel_n} ({pct(s.top_vessel_pct)})</td>
+                    <td className={`${TD} text-right font-mono`}>{s.no_photos} ({pct(s.no_photos_pct)})</td>
+                    <td className={`${TD} text-right font-mono`}>{s.zero_diff} ({pct(s.zero_diff_pct)})</td>
+                    <td className={`${TD} text-muted-foreground whitespace-nowrap`}>{fmtDate(s.last_survey)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      {/* DUBBELE ROUTES */}
+      <div className={CARD}>
+        <div className={CARD_HEADER}>
+          <div>
+            <h3 className={CARD_TITLE}>Dubbele routes</h3>
+            <p className={CARD_SUBTITLE}>Eigen job van een surveybedrijf gekoppeld aan een GBQS-order (geen tegoed, eigen klant krijgt het GBQS-rapport)</p>
+          </div>
+          <span className={COUNT_CHIP}>{ovLoading ? '…' : formatCount(overlaps.length)}</span>
+        </div>
+        {ovLoading && overlaps.length === 0 ? (
+          <div className="p-5 space-y-2">{[1, 2].map(i => <div key={i} className="h-10 rounded bg-muted animate-pulse" />)}</div>
+        ) : overlaps.length === 0 ? (
+          <div className="py-8 text-center text-muted-foreground text-sm">Geen dubbele routes.</div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full border-collapse">
+              <thead>
+                <tr><th className={TH}>EIGEN JOB</th><th className={TH}>BEDRIJF</th><th className={TH}>SCHIP</th><th className={TH}>HAVEN · ETA (LT)</th><th className={TH}>GBQS-ORDER</th><th className={TH}>STATUS</th></tr>
+              </thead>
+              <tbody>
+                {overlaps.map(o => (
+                  <tr key={o.job_id} className={ROW}>
+                    <td className={TD}><span className="font-mono">{o.reference}</span><div className="text-xs text-muted-foreground">{o.survey_type}</div></td>
+                    <td className={`${TD} text-muted-foreground`}>{o.company_name ?? '—'}</td>
+                    <td className={TD}>{o.vessel_name ?? '—'}<div className="text-xs text-muted-foreground">{o.imo_number ? `IMO ${o.imo_number}` : ''}</div></td>
+                    <td className={`${TD} text-muted-foreground`}>{o.port ?? '—'}<div className="text-xs">{o.eta ? new Date(o.eta).toLocaleString('nl-NL', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', timeZone: 'UTC' }) : ''}</div></td>
+                    <td className={TD}><span className="font-mono">{o.gbqs_reference ?? '—'}</span><div className="text-xs text-muted-foreground">{o.gbqs_surveyor ?? ''}</div></td>
+                    <td className={`${TD} text-muted-foreground`}>{o.job_status}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      <Dialog open={!!decide} onOpenChange={o => { if (!o) setDecide(null) }}>
+        <DialogContent className="max-w-lg bg-card border-border">
+          <DialogHeader>
+            <DialogTitle className="text-foreground">
+              {decide?.approve ? 'Voorstel bevestigen' : 'Voorstel afwijzen'}{decide ? ` · ${decide.p.name}` : ''}
+            </DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4 py-2">
+            {decide && (
+              <p className="text-muted-foreground text-[13px]">
+                {decide.approve
+                  ? <>De status wordt <b>{STATUS_LABELS[decide.p.to_status]}</b> en de surveyor krijgt direct een mail{decide.p.to_status === 'conditional' ? ' met de herstelperiode' : ' dat de certificering is ingetrokken'}. Reden in de mail (Engels): “{decide.p.reason ?? '—'}”. Vul hieronder alleen iets in als je een andere reden in de mail wilt.</>
+                  : <>De status blijft <b>{STATUS_LABELS[decide.p.from_status]}</b>; er gaat geen mail uit. Volgende maand wordt de surveyor opnieuw beoordeeld.</>}
+              </p>
+            )}
+            <div>
+              <Label className="text-muted-foreground text-xs mb-1.5 block">{decide?.approve ? 'Andere reden voor de mail (Engels, optioneel)' : 'Reden (intern) *'}</Label>
+              <Textarea value={note} onChange={e => { setNote(e.target.value); setFormError('') }} rows={3} className={INPUT_CLS}
+                placeholder={decide?.approve ? '' : 'bijv. tijdelijke dip door 2 lastige surveys, gecontroleerd'} />
+            </div>
+          </div>
+          {formError && <div className="rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">{formError}</div>}
+          <DialogFooter className="gap-2">
+            <Button variant="ghost" onClick={() => setDecide(null)} className="text-muted-foreground hover:text-foreground">Annuleren</Button>
+            <Button onClick={saveDecide} disabled={saving}
+              className={decide?.approve ? 'bg-primary hover:bg-primary/90 text-primary-foreground' : 'bg-card border border-border text-foreground hover:bg-muted'}>
+              {saving ? 'Bezig…' : decide?.approve ? 'Bevestigen en mailen' : 'Afwijzen'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={!!revoke} onOpenChange={o => { if (!o) setRevoke(null) }}>
+        <DialogContent className="max-w-lg bg-card border-border">
+          <DialogHeader><DialogTitle className="text-foreground">Certificering intrekken{revoke ? ` · ${revoke.name}` : ''}</DialogTitle></DialogHeader>
+          <div className="space-y-4 py-2">
+            <p className="text-muted-foreground text-[13px]">
+              De status wordt direct <b>Ingetrokken</b> ({revoke?.cert_number ?? ''}) en de surveyor krijgt een mail met de reden. Gebruik dit bijvoorbeeld bij misbruik van de badge.
+            </p>
+            <div>
+              <Label className="text-muted-foreground text-xs mb-1.5 block">Reden (komt in de mail, Engels) *</Label>
+              <Textarea value={note} onChange={e => { setNote(e.target.value); setFormError('') }} rows={3} className={INPUT_CLS} />
+            </div>
+          </div>
+          {formError && <div className="rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">{formError}</div>}
+          <DialogFooter className="gap-2">
+            <Button variant="ghost" onClick={() => setRevoke(null)} className="text-muted-foreground hover:text-foreground">Annuleren</Button>
+            <Button onClick={saveRevoke} disabled={saving} className="bg-destructive hover:bg-destructive/90 text-destructive-foreground">{saving ? 'Bezig…' : 'Intrekken en mailen'}</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </div>
+  )
+}
