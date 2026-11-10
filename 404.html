@@ -30,6 +30,16 @@
     </ul>
   </div>
 
+  <div class="card" id="portal-link" style="display:none;border-left:4px solid #2fa0d6">
+    <h2>This link opens a portal page</h2>
+    <p>On the live system this link opens <code id="pl-path"></code> in the GlobalBQS portal. The demo has no public portal, so open the same page in the <strong>portal editor preview</strong> (signed in with the test account).</p>
+    <ul class="muted">
+      <li>Draft ready / approve a report: preview › <strong>My jobs</strong> › View draft › Approve &amp; send to client.</li>
+      <li>Credits, invoices, reports: the page with the same name in the surveyor menu.</li>
+    </ul>
+    <p class="muted">You do not need to sign in below for this.</p>
+  </div>
+
   <div class="card" id="signin">
     <h2>Sign-in check</h2>
     <p class="muted">Signs in on the demo, runs the same first-login step as the portal and shows what the account sees. Signs out again afterwards.</p>
@@ -44,7 +54,16 @@
     <pre id="out" style="display:none"></pre>
   </div>
 </div></main>
-<footer>GlobalBQS · test environment · demo data only · v1.0.0</footer>
+<footer>GlobalBQS · test environment · demo data only · v1.0.2</footer>
+<script>
+(() => {
+  const p = location.pathname.replace(/\/+$/, '');
+  if (p && p !== '/' && !/^\/(index|404)(\.html)?$/.test(p)) {
+    document.getElementById('pl-path').textContent = p + (location.search || '');
+    document.getElementById('portal-link').style.display = '';
+  }
+})();
+</script>
 <script>
 (() => {
   const c = GBQS_TEST;
