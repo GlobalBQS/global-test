@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>Payment – GlobalBQS test environment</title>
+<link rel="stylesheet" href="/style.css?v=1.0.0">
+<style>
+  .big { font-size: 22px; font-weight: 700; margin: 0 0 6px; }
+  .steps { margin: 14px 0 0; padding-left: 18px; }
+  .steps li { margin: 4px 0; }
+  .ref { font-family: ui-monospace, Menlo, monospace; font-size: 12px; color: #5c6b85; }
+</style>
+</head>
+<body>
+<div class="banner">TEST ENVIRONMENT (DEMO) · NOT FOR CLIENTS</div>
+<header><div class="wrap"><span class="brand">GlobalBQS</span><span class="sub">Surveyor credits</span></div></header>
+<main><div class="wrap">
+  <div class="card">
+    <p class="big" id="t">Payment</p>
+    <div id="m" class="msg info" style="display:block">Checking the result…</div>
+    <ol class="steps" id="s">
+      <li>Go back to the GlobalBQS portal tab.</li>
+      <li>Refresh <b>Credits &amp; invoices</b> – your new balance and the purchase appear in <b>Credit history</b>.</li>
+    </ol>
+    <p class="ref" id="r"></p>
+  </div>
+  <p class="muted">You see this page because the payment was started from the portal preview (test environment). In the live portal you return straight to <b>Credits &amp; invoices</b>.</p>
+</div></main>
+<footer>GlobalBQS · test environment · demo data only · v1.0.1</footer>
+<script>
+(() => {
+  const q = new URLSearchParams(location.search);
+  const res = q.get('result'), pid = q.get('purchase') || '';
+  const t = document.getElementById('t'), m = document.getElementById('m'), r = document.getElementById('r'), s = document.getElementById('s');
+  if (res === 'success') {
+    t.textContent = 'Thank you – payment received';
+    m.className = 'msg ok'; m.textContent = 'Your credits are being added now (usually within a few seconds). Stripe e-mails you the receipt.';
+  } else if (res === 'cancelled') {
+    t.textContent = 'Payment cancelled';
+    m.className = 'msg info'; m.textContent = 'Nothing was charged and no credits were added. You can try again from Credits & invoices.';
+    s.firstElementChild.nextElementSibling.style.display = 'none';
+  } else {
+    t.textContent = 'Surveyor credits';
+    m.className = 'msg info'; m.textContent = 'Open Credits & invoices in the GlobalBQS portal to see your balance.';
+  }
+  if (/^[0-9a-f-]{36}$/i.test(pid)) r.textContent = 'Reference: ' + pid;
+  try { history.replaceState(null, '', location.pathname); } catch (e) {}
+})();
+</script>
+</body>
+</html>
